@@ -1,0 +1,382 @@
+---
+title: "Ejercicio para la plaza de soporte a la investigación en el proyecto 'Proyecto de atención del niño con nevus congénito y melanoma infantil' (Ref. Conv-FU-17/2022)"
+author: "Xevi Alarcon Masferrer"
+date: "11/2/2022"
+output:
+  pdf_document: default
+  html_document: default
+toc: True
+---
+
+\newpage
+
+```{r,include=FALSE}
+library(dplyr)
+library(oligo)
+library(gplots)
+library(ggrepel)
+library(affy)
+library(Biobase)
+library(GEOquery)
+library(xlsx)
+library(affycoretools)
+library(ggdendro)
+library(hgu133plus2.db)
+library(limma)
+library(goProfiles)
+library(RColorBrewer)
+```
+
+
+# **1.- Leemos los archivos *.CEL (*.cel) y los guardamos en un objeto tipo "AffyBatch".**
+
+
+```{r}
+# Cargamos los datos de archivos CEL usando la función ReadAffy. 
+# En mi caso el directorio es el escritorio.
+mydata <- ReadAffy()
+# Dimensiones del objeto
+dim(mydata)
+```
+
+```{r}
+# Visualizamos la información sobre las muestras, también llamada datos de fenotipo(Phneodata). Se accede mediante la función pData().
+pData(mydata)
+```
+
+
+Hay 15 Muestras en total.
+
+
+```{r}
+head(exprs(mydata))
+```
+
+\newpage
+# **2.- Generamos el archivo con los datos fenotípicos y los unificamos con los archivos .CEL .** 
+
+
+En este caso, lo que he hecho ha sido descargar el archivo series.matrix y copiar las características descriptivas que me interesan para el analisis junto con el id de la muestra en un nuevo archivo.txt, phenot.txt.
+
+Creamos un objeto de la clase AnnotatedDataFrame leyendo el archivo "phenot.txt" con los datos fenotípicos.
+
+
+```{r}
+pheno <- read.AnnotatedDataFrame("phenot.txt")
+pheno
+```
+
+Para unificar "mydata" con "pheno", el nexo de unión es el nombre de las muestras. Antes de unificar los datos tenemos que comprobar que los nombres de las muestras de los dos archivos son los mismos y en el mismo orden.
+
+Para hacer la comparación, vemos que los nombres de las muestras en mydata llevan el .CEL de archivo.cel. Podemos senzillamente añadir ".CEL" en los nombres de las muestras del archivo "pheno" con la función paste0() para comparar. 
+
+
+```{r}
+rownames(pData(mydata)) == paste0(rownames(pheno),".CEL")
+```
+
+Vemos que los nombres de las muestras concuerdan para los dos objetos.
+
+
+Así pues, incluímos el archivo "pheno" como los datos phenotipicos de mydata.
+
+
+```{r}
+mydata@phenoData <- pheno
+rownames(protocolData(mydata)) = rownames(pData(mydata))
+protocolData(mydata)
+```
+
+
+Podemos visualizar mediante pData() las características ahora descritas en los datos fenotípicos.
+
+
+```{r}
+pData(mydata)
+```
+
+
+Vemos que ahora se relaciona cada muestra con 2 fenotipos : Disease (Si presenta Síndrome de Sjogren o no: SS, non-SS), disease_status (Estadio de la enfermedad: Avanzada, moderada, temprana y control), y dos variables descriptivas, patient(número del paciente) y batch.
+
+
+```{r}
+#Definimos los niveles para la variable disease_status.
+levels(mydata$disease_status) = c("control-non-SS", "control-SS", "early", "moderate", "advanced")
+levels(mydata$disease_status)
+```
+```{r}
+#Visualizamos el número de muestras para cada nivel.
+table(mydata$disease_status)
+```
+```{r}
+#Definimos los niveles para la variable disease.
+levels(mydata$disease) = c("SS", "non-SS")
+levels(mydata$disease)
+```
+```{r}
+#Visualizamos el número de muestras para cada nivel.
+table(mydata$disease)
+```
+
+\newpage
+## **2.1.- Analisis exploratorio de los datos crudos.**
+
+
+### **2.1.1 - Análisis de componentes principales.**
+
+
+Vamos a relizar un análisis de componentes principales con los datos crudos para cada muestra.
+
+
+```{r}
+PCA_raw <- prcomp(exprs(mydata))
+percentVar_raw <- round(100*PCA_raw$sdev^2/sum(PCA_raw$sdev^2),1)
+sd_ratio_raw <- sqrt(percentVar_raw[2] / percentVar_raw[1])
+
+dataGG_raw <- data.frame(PC1= PCA_raw$rotation[,1],
+                    PC2= PCA_raw$rotation[,2],
+                    Disease = pData(mydata)$disease,
+                    Stadium = pData(mydata)$disease_status
+                    )
+
+ggplot(dataGG_raw, aes(PC1, PC2)) +
+  geom_point(aes(shape = Disease, colour = Stadium)) +
+  ggtitle("PCA plot of raw  expression data") +
+  xlab(paste0("PC1, VarExp: ", percentVar_raw[1], "%")) +
+  ylab(paste0("PC2, VarExp: ", percentVar_raw[2], "%")) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(aspect.ratio = 1) +
+  coord_fixed(ratio = sd_ratio_raw) +
+  scale_shape_manual(values = c(4,15))
+```
+Observamos que las muestras no siguen ningún patrón. 
+Hay dos muestras control separadas del resto, pero los controles restantes estan mezclados con el resto de muestras. Para la caraterística "status", solo se puede percibir una relación para el grupo "early". Cuatro de las 5 muestras que pertenecen a el grupo "early" se presentan juntas. Dos de las muestras que pertencen al grupo "moderate"  se presentan juntas pero la tercera aparece muy alejada.
+El componente principal 1 explica el 87.3 %  de toda la variabilidad, y el componente principal 2 el 5,6 %.
+
+
+### **2.1.2- Diagrama de cajas.**
+
+
+Vamos a relizar un diagrama de cajas con los datos crudos para cada muestra.
+
+
+```{r}
+boxplot(mydata, xlab="Samples",las=2, col = "Nairobi")
+title("Boxplots of raw data")
+```
+
+Al observar el diagrama de caja , vemos que las distribuciones de las muestras son muy diferentes, lo que indica la necesidad de una normalización adecuada.
+
+
+# **3.-Normalizamos los datos con el método RMA (robust multi-array average).**
+
+
+```{r}
+#Normalizamos los datos mediante el método RMA.
+eset <- affy::rma(mydata)
+```
+
+## **3.1.- Analisis exploratorio de los datos normalizados.**
+
+
+### **3.1.1.- Diagrama de cajas.**
+
+
+Ahora podemos realizar un diagrama de cajas con los datos normalizados para cada muestra.
+
+
+```{r}
+boxplot(exprs(eset),xlab="Samples",las=2)
+abline(h=median(exprs(eset)),col="blue")
+title("Boxplots of normalised data")
+```
+
+Observamos que al normalizar los datos las distribuciones de las muestras se han corregido y son muy equiparables.
+
+
+### **3.1.2.- Análisis de componentes principales.**
+
+
+Vamos, ahora, a relizar un análisis de componentes principales con los datos normalizados para cada muestra.
+
+
+```{r}
+PCA <- prcomp(exprs(eset))
+percentVar <- round(100*PCA$sdev^2/sum(PCA$sdev^2),1)
+sd_ratio <- sqrt(percentVar[2] / percentVar[1])
+
+dataGG<- data.frame(PC1 = PCA$rotation[,1],
+                    PC2 = PCA$rotation[,2],
+                    Disease = pData(eset)$disease,
+                    Stadium = pData(eset)$disease_status
+                    )
+
+ggplot(dataGG, aes(PC1, PC2)) +
+  geom_point(aes(shape = Disease, colour = Stadium)) +
+  ggtitle("PCA plot of normalized expression data") +
+  xlab(paste0("PC1, VarExp: ", percentVar[1], "%")) +
+  ylab(paste0("PC2, VarExp: ", percentVar[2], "%")) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme(aspect.ratio = 1) +
+  coord_fixed(ratio = sd_ratio) +
+  scale_shape_manual(values = c(4,15))
+```
+El análisis de componentes principales para los datos normalizados es más explicativo que el mismo análisis con datos crudos.  Podemos observar como las muestras de pacientes sin SS ("cruzes") se situan muy próximas entre ellas en la parte inferior del gráfico, y la gran mayoria de muestras de pacientes con SS se disponen en la parte superior del gráfico (a excepción de las dos muestras "SS-early"). 
+Sin embargo, en relación al estadío de las muestras de pacientes con SS, no se percibe ningún tipo de patron de proximidad entre grupos.
+
+El componente principal 1 explica el 96.3 % de la variablidad. Un 9% más que en los datos crudos (87.3%). Podríamos interpretar que la variablidad viene dada dentro de los grupos de "Disease".
+
+\newpage
+# **4.-Análisis de expresion diferencial**
+
+
+Una vez normalizados los datos y habiendo realizado un análisis exploratório, el siguiente paso es detectar, si existen, genes expresados diferencialmente entre grupos.
+
+Vamos a representar un dendograma con la función heatmap de los primeros 100 genes de la lista.
+
+
+```{r}
+# Calculamos un dendograma para los 100 primeros genes de la lista.
+heatmap(exprs(eset[1:100,]),main="Heatmap")
+```
+Ahora vamos a utilizar la función lmFit del paquete "Limma" para buscar genes expresados diferencialmente en relación a la característica "disease_status".
+
+
+```{r}
+f<- factor(as.character(eset$disease_status))
+design <- model.matrix(~f)
+fit <- eBayes(lmFit(eset,design))
+tb <- topTable(fit, coef =2)
+tb
+```
+
+
+logFC es el ratio logarítmico de expresion, AveExpr es la expresión media logarítmica, t es el estadístico t moderado y B es la probabilidad logarítmica de expresión diferencial.
+
+Ahora vamos a seleccionar los genes que presentan un p-valor inferior a 0.5 y por lo tanto presentan expresión diferencial.
+
+
+```{r}
+selected <- p.adjust(fit$p.value[,2])<0.05
+# Seleccionamos solamente los genes expresados diferencialmente del conjunto y calculamos un nuevo dendograma.
+esetSel <- eset[selected,]
+coul <- colorRampPalette(brewer.pal(8, "PiYG"))(25)
+heatmap(exprs(esetSel), col = coul, main="Heatmap")
+```
+
+Hemos detectado 9 genes expresados diferencialmente para tres grupos de muestras. Podemos observar como existe un patrón de agrupación de muestras en base a si el paciente presenta SS o no y en que estadío. 
+
+
+-**Grupo 1.-** GSM569471(SS advanced), (GSM569472 (SS advanced), GSM569483(SS moderate)).
+
+El grupo 1 nos agrupa las muestras de pacientes con SS de estadío "advanced" (GSM569471,GSM569472). Sin embargo, también incluye una muestra, GSM569483, que pertenece al estadío "moderated", y de hecho es más próxima dentro del grupo a GSM569472, que GSM569471.
+
+
+-**Grupo 2.-** GSM569477 (control-SS), (GSM569475 (control-non SS), GSM569474(control-non SS), (GSM569473(control-non SS), GSM569476(control-non SS))).
+
+Vemos que todas las muestras control se agrupan juntas. Las muestras GSM569475, GSM569474, GSM569473, GSM569476 que pertenecen a muestras control de pacientes sin SS son las más próximas y la muestra más alejada de este cluster  es GSM569477, muestra control de paciente con SS.
+
+
+-**Grupo 3.-** (GSM569484(SS moderate), GSM569485(SS moderate)), ((GSM569482(SS-early), GSM569480 (SS-early)), (GSM569478(SS-early), GSM569479(SS-early), GSM569481(SS-early))).
+
+En el grupo 3 observamos como todas las muestras de pacientes con SS en el estadío temprano ("early"): GSM569482, GSM569480,GSM569478,GSM569479, GSM569481, se agrupan juntas. Sin embargo, en el grupo 3 también se incluyen dos muestras de pacientes con SS del estadio "moderate"(GSM569484, GSM569485), como las muestras más alejadas del primer cluster.
+
+
+
+**Discusión:**
+
+Como ya hemos comentado previamente, vemos que todas las muestras, excepto las muestras de pacientes SS "moderated", se agrupan juntas en base a si presentan la enfermedad o no, y al estadío de la enfermedad en el que se encuentran. Una explicación  podría estar relacionada con el baremo que se ha tomado para separar las muestras de pacientes con SS en los tres estadíos diferentes.
+
+Mientras que los estadíos "early" y "advanced" parecen estar muy bien delimitados, el estadío "moderate" parece más una transición del estadío "early" al estadío"advanced" que un propio estadío más de la enfermedad. No vemos un grupo bien definido para las muestras del estadío "moderate" como con los estadíos "early" y "advanced". Por lo tanto, la interpretación lógica es pensar que la muestra SS "moderate" GSM569483 del grupo 1 no se agrupa con las muestras GSM569484, GSM569485, porque la primera se encuentra en un estadío más avanzado de la enfermedad ("moderated-advanced"), mientras que las dos muestras del grupo 3 se encuentran en un estadío más temprano ("early-moderated").
+
+\newpage
+# **5.- Anotación de genes**
+
+
+Ya tenemos un conjunto de 9 genes expresados diferencialmente . Vamos a anotar estos genes.
+El paquete de anotaciones de Affymetrix es hgu133plus2.db.
+
+
+```{r}
+#Seleccionamos las columnas. "SYMBOL", "GENENAME" y "ENTREID"
+anot <- AnnotationDbi::select(hgu133plus2.db,
+                                  keys = rownames(esetSel),
+                                  columns =c("SYMBOL","GENENAME","ENTREZID"),
+                                  keytype = "PROBEID")
+anot <- subset(anot, !is.na(SYMBOL))
+```
+```{r}
+anot
+```
+
+
+## **5.1.- Detección de asignaciones múltiples de identificadores.**
+
+
+Muchas veces, algunos identificadores se asignarán a múltiples símbolos de genes. 
+En este caso, podemos ver que al identificador 205821_at, se le a asignado dos símbolos de genes: KLRK1, KLRC4-KLRK1. En este caso, dado que el número de genes "target" no es muy grande, se puede eliminar directamente porqué se sabe qué elemento es, y que posición ocupa. 
+¿Pero que pasa si la lista es de 500 elementos en vez de 6?
+
+Vamos a definir el código para detectar un numero desconocido de asignaciones multiples.
+
+
+```{r}
+anno_group <- group_by(anot, PROBEID)
+anot_sum<-dplyr::summarize(anno_group, no_of_matches = n_distinct(SYMBOL))
+anot_filt<- filter(anot_sum, no_of_matches > 1)
+anot_filt
+```
+
+
+Hay una doble asignación para el identificador "205821_at".
+
+
+Ahora, vamos a ver a que genes se ha assignado este identificador.
+
+
+```{r}
+#Devolver "SYMBOL" cuando el identificador sea "205821_at".
+subset(anot, anot$PROBEID == "205821_at")
+```
+
+Se asignado el identificador 205821_at a los genes KLRK1 y KLRC4 - KLRK1.
+
+\newpage
+# **6.- Análisis de enriquecimiento basado en gene ontology.**
+
+
+Podemos también realizar un análisis de enriquecimiento basado en gene ontology. Para relacionar los genes con sus términos GO.
+
+goProfiles es un paquete de R creado por Alex Sánchez, Jordi Ocana y Miquel Salicru para la creación de perfiles funcionales de listas de genes y la comparación de estas listas cuando requiera.
+En mi trabajo de fin de máster codifiqué una aplicación en shiny que incluye todas las funciones del paquete y permite realizar el análisis comparativo de las listas.
+link: https://github.com/xevialarconmasferrer/goProfilesApp
+
+Vamos a aprovechar y realizar el análisis de enriquezimiento mediante las funciones del paquete.
+
+BasicProfile() es una función que crea el perfil funcional de una lista de genes. Toma como argumentos: una lista de identificadores, el nivel de ontología, la categoría o categorías ontológicas y el paquete de anotaciones.
+
+
+```{r}
+#Generamos el perfil funcional con basicProfile()
+BP <- basicProfile(genelist = as.vector(anot$ENTREZID), onto = "ANY", level = 3, orgPackage = "org.Hs.eg.db", anotPackage= "hgu133plus2.db")
+```
+```{r}
+#Perfil funcional de los genes en la categoría ontológica ´"Morfological function"
+head(BP$MF)
+#Perfil funcional de los genes en la categoría ontológica ´"Biological process"
+head(BP$BP)
+#Perfil funcional de los genes en la categoría ontológica ´"Cellular component"
+head(BP$CC)
+```
+
+plotProfiles() nos permite graficar los perfiles funcionales para cada una de las categorías ontológicas seleccionadas. El gráfico nos muestra el número de genes de la lista que se relacionan con cada uno de los go Terms de cada categoría ontológica.
+
+
+```{r}
+# Gráfico del perfil funcional de los genes en la categoría ontológica "Morfological function"
+plotProfiles(BP$MF)
+# Gráfico del perfil funcional de los genes en la categoría ontológica "Biological process"
+plotProfiles(BP$BP)
+# Gráfico del perfil funcional de los genes en la categoría ontológica "Cellular component"
+plotProfiles(BP$CC)
+```
