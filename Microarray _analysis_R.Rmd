@@ -161,7 +161,7 @@ Vamos a relizar un diagrama de cajas con los datos crudos para cada muestra.
 
 
 ```{r}
-boxplot(mydata, xlab="Samples",las=2, col = "Nairobi")
+boxplot(mydata, xlab="Samples",las=2)
 title("Boxplots of raw data")
 ```
 
