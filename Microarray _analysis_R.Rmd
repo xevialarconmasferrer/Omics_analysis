@@ -30,6 +30,7 @@ library(RColorBrewer)
 
 # **1.- Leemos los archivos *.CEL (*.cel) y los guardamos en un objeto tipo "AffyBatch".**
 
+Link archivos: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE23117
 
 ```{r}
 # Cargamos los datos de archivos CEL usando la función ReadAffy. 
