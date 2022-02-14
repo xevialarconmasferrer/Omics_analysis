@@ -1,3 +1,3 @@
 # Omics_analysis
 
-Worflow of an R analysis of microarray data
+Microarray data analysis workflow
